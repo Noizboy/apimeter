@@ -8,5 +8,5 @@ Comment=Floating widget showing OpenRouter balance and per-model cost
 Terminal=false
 Type=Application
 StartupNotify=true
-StartupWMClass=openrouter-widget
+StartupWMClass=Apimeter
 Keywords=openrouter;api;cost;usage;meter;widget;

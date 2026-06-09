@@ -223,3 +223,18 @@ input {
   font-size: 10px;
   margin-top: 6px;
 }
+
+.app-version {
+  font-size: 8px;
+  color: #666;
+  text-align: right;
+  padding: 0;
+  line-height: 1;
+  letter-spacing: 0.3px;
+}
+
+.error-card .app-version,
+.status-card .app-version {
+  margin-top: 6px;
+  padding: 0;
+}

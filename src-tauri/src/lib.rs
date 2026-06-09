@@ -596,6 +596,25 @@ fn safe_fallback_position(
   ))
 }
 
+/// Positions an existing window at the bottom-left of the primary monitor.
+fn apply_bottom_left_position(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+  if let Some(monitor) = app.available_monitors().ok().and_then(|list| list.into_iter().next()) {
+    let scale = monitor.scale_factor();
+    let mon_pos = monitor.position();
+    let mon_size = monitor.size();
+    let window_h = 132.0;
+    let padding_phys = 24.0;
+
+    let x_phys = mon_pos.x as f64 + padding_phys;
+    let y_phys = mon_pos.y as f64 + mon_size.height as f64 - (window_h * scale) - padding_phys;
+
+    let _ = window.set_position(Position::Logical(LogicalPosition::new(
+      x_phys / scale,
+      y_phys / scale,
+    )));
+  }
+}
+
 /// Creates a new widget window at the bottom-left of the primary monitor.
 fn create_widget_window(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
   let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
@@ -687,13 +706,18 @@ pub fn run() {
               }
             }
           }
+        } else {
+          // No saved position — place at bottom-left of primary monitor
+          apply_bottom_left_position(app.handle(), &window);
         }
 
         let _ = window.set_always_on_top(true);
-        let _ = window.set_skip_taskbar(true);
+        let _ = window.set_skip_taskbar(false);
+        // Ensure the window is visible (in case config had visible=false)
+        let _ = window.show();
       }
 
-      // ── Window counter for multi-window labels (starts at 1 because widget-0 is the initial window) ──
+      // ── Window counter for multi-window labels (starts at 1; main is widget-0 equivalent) ──
       app.manage(AtomicU32::new(1));
 
       // ── System tray icon with context menu ──
@@ -749,11 +773,6 @@ pub fn run() {
           _ => {}
         })
         .build(app)?;
-
-      // ── Open the first visible widget at bottom-left ──
-      if let Err(e) = create_widget_window(app.handle(), "widget-0") {
-        eprintln!("[setup] failed to create initial widget: {e}");
-      }
 
       Ok(())
     })

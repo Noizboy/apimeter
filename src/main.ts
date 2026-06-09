@@ -1,6 +1,7 @@
 import './styles.css';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 import { getDashboardData, saveWindowPosition } from './api';
 import type { DashboardData, DashboardState, ModelCost } from './types';
 
@@ -19,6 +20,7 @@ let savePositionHandle: number | undefined;
 let resizeFrameHandle: number | undefined;
 let alwaysOnTopHandle: number | undefined;
 let isRefreshing = false;
+let appVersion = '';
 
 const WINDOW_FRAME_PADDING = 0;
 const REFRESH_INTERVAL_MS = 15_000;
@@ -204,6 +206,9 @@ function renderReady(data: DashboardData, staleMessage?: string) {
   } else {
     widget.append(balanceCard, modelsGrid);
   }
+  if (appVersion) {
+    widget.append(createElement('div', 'app-version', `v${appVersion}`));
+  }
   shell.append(widget);
   app.replaceChildren(shell);
   syncWindowSize();
@@ -217,6 +222,9 @@ function renderMessageCard(className: 'status-card' | 'error-card', title: strin
     createElement('div', 'meta-copy', meta),
   );
   section.append(copyWrapper);
+  if (appVersion) {
+    section.append(createElement('div', 'app-version', `v${appVersion}`));
+  }
   app.replaceChildren(section);
   syncWindowSize();
 }
@@ -304,6 +312,7 @@ async function flushWindowPositionSave() {
 }
 
 async function bootstrap() {
+  appVersion = await getVersion().catch(() => '');
   setupWindowInteractions();
   // Re-assert above-stack on focus/visibility too: compositors like
   // Mutter/Wayland can drop the always-on-top hint when the window loses
