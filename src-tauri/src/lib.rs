@@ -712,7 +712,7 @@ pub fn run() {
         }
 
         let _ = window.set_always_on_top(true);
-        let _ = window.set_skip_taskbar(false);
+        let _ = window.set_skip_taskbar(true);
         // Ensure the window is visible (in case config had visible=false)
         let _ = window.show();
       }
