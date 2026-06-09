@@ -17,4 +17,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export GDK_BACKEND=x11
 export LD_PRELOAD=/lib/x86_64-linux-gnu/libpthread.so.0
+# Force standard light theme so tray icon menu text is visible
+# (dark themes like Yaru-*-dark can make menu text invisible)
+export GTK_THEME=Adwaita:light
 exec "${HERE}/src-tauri/target/release/openrouter-widget" "$@"
