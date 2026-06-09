@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="arc" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="55%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#fbbf24"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.6">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220" fill="url(#bg)"/>
+
+  <g opacity="0.08" stroke="#22d3ee" stroke-width="2" fill="none">
+    <path d="M 0 256 L 1024 256"/>
+    <path d="M 0 512 L 1024 512"/>
+    <path d="M 0 768 L 1024 768"/>
+    <path d="M 256 0 L 256 1024"/>
+    <path d="M 512 0 L 512 1024"/>
+    <path d="M 768 0 L 768 1024"/>
+  </g>
+
+  <circle cx="512" cy="512" r="430" fill="url(#glow)"/>
+
+  <circle cx="512" cy="512" r="420" fill="none" stroke="#334155" stroke-width="22"/>
+
+  <path d="M 152 512 A 360 360 0 0 0 872 512" fill="none" stroke="url(#arc)" stroke-width="48" stroke-linecap="round"/>
+
+  <g stroke="#cbd5e1" stroke-width="12" stroke-linecap="round">
+    <line x1="152" y1="512" x2="210" y2="512"/>
+    <line x1="872" y1="512" x2="814" y2="512"/>
+    <line x1="219" y1="805" x2="296" y2="728"/>
+    <line x1="805" y1="805" x2="728" y2="728"/>
+    <line x1="512" y1="852" x2="512" y2="800"/>
+  </g>
+
+  <g stroke="#64748b" stroke-width="6" stroke-linecap="round">
+    <line x1="178" y1="646" x2="218" y2="606"/>
+    <line x1="373" y1="844" x2="411" y2="806"/>
+    <line x1="650" y1="844" x2="613" y2="806"/>
+    <line x1="845" y1="646" x2="806" y2="606"/>
+  </g>
+
+  <polygon points="500.7,520.2 676.6,738.5 523.3,503.8" fill="#f1f5f9"/>
+
+  <circle cx="512" cy="512" r="48" fill="#0f172a" stroke="#94a3b8" stroke-width="6"/>
+  <circle cx="512" cy="512" r="22" fill="#22d3ee"/>
+
+  <text x="512" y="660" font-family="Arial, Helvetica, sans-serif" font-size="96" font-weight="700" fill="#f1f5f9" text-anchor="middle" letter-spacing="8">API</text>
+</svg>

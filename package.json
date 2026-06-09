@@ -1,0 +1,24 @@
+{
+  "name": "apimeter",
+  "private": true,
+  "version": "0.1.2",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:build": "tauri build",
+    "finalize:deb": "bash scripts/finalize-linux-bundle.sh \"src-tauri/target/release/bundle/deb/Apimeter_0.1.2_amd64.deb\" \"src-tauri/target/release/bundle/deb/Apimeter_0.1.2_amd64-xwayland.deb\"",
+    "finalize:appimage": "bash scripts/finalize-appimage.sh \"src-tauri/target/release/bundle/appimage/Apimeter_0.1.2_amd64.AppImage\" \"src-tauri/target/release/bundle/appimage/Apimeter_0.1.2_amd64-xwayland.AppImage\"",
+    "build:linux": "npm run tauri:build && npm run finalize:deb && npm run finalize:appimage"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3"
+  }
+}

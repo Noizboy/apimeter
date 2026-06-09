@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenRouter Overlay Mockup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./openrouter-overlay.css" />
+</head>
+<body>
+  <main class="stage">
+    <section class="or-widget" aria-label="Balance y costo por modelo">
+      <div class="balance-card">
+        <span class="balance-label">Balance</span>
+        <span class="balance-value">$12.48</span>
+      </div>
+
+      <div class="models-grid">
+        <div class="model-card accent-cyan">
+          <span class="model-name">GPT-4o</span>
+          <span class="model-cost">$0.21</span>
+        </div>
+
+        <div class="model-card accent-lime">
+          <span class="model-name">Claude</span>
+          <span class="model-cost">$0.11</span>
+        </div>
+
+        <div class="model-card accent-orange">
+          <span class="model-name">Gemini</span>
+          <span class="model-cost">$0.05</span>
+        </div>
+      </div>
+
+      <button class="more-button" type="button" aria-label="Mostrar más modelos" aria-expanded="false" aria-controls="more-panel">
+        <span>More</span>
+        <span class="more-arrow">↓</span>
+      </button>
+
+      <div class="more-panel" id="more-panel" hidden>
+        <div class="chart-row">
+          <span class="chart-name">Llama</span>
+          <span class="chart-bar"><span class="fill fill-cyan" style="width: 44%"></span></span>
+          <span class="chart-value">$0.03</span>
+        </div>
+        <div class="chart-row">
+          <span class="chart-name">Mistral</span>
+          <span class="chart-bar"><span class="fill fill-lime" style="width: 31%"></span></span>
+          <span class="chart-value">$0.02</span>
+        </div>
+        <div class="chart-row">
+          <span class="chart-name">Qwen</span>
+          <span class="chart-bar"><span class="fill fill-orange" style="width: 22%"></span></span>
+          <span class="chart-value">$0.01</span>
+        </div>
+        <div class="chart-row">
+          <span class="chart-name">DeepSeek</span>
+          <span class="chart-bar"><span class="fill fill-black" style="width: 16%"></span></span>
+          <span class="chart-value">$0.01</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const button = document.querySelector('.more-button');
+    const panel = document.querySelector('.more-panel');
+
+    button?.addEventListener('click', () => {
+      const isOpen = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', String(!isOpen));
+      panel.hidden = isOpen;
+    });
+  </script>
+</body>
+</html>

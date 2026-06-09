@@ -1,0 +1,12 @@
+[Desktop Entry]
+Categories=Utility;
+Exec=apimeter-launcher.sh
+Icon=apimeter
+Name=Apimeter
+GenericName=API Usage Widget
+Comment=Floating widget showing OpenRouter balance and per-model cost
+Terminal=false
+Type=Application
+StartupNotify=true
+StartupWMClass=openrouter-widget
+Keywords=openrouter;api;cost;usage;meter;widget;
