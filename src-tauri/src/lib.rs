@@ -1,6 +1,6 @@
 mod openrouter;
 
-use chrono::{Datelike, Duration, Utc};
+use chrono::{Datelike, Utc};
 use openrouter::{ActivityItem, CreditsEnvelope};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, env, fs, path::{Path, PathBuf}};
@@ -41,34 +41,45 @@ struct WindowState {
   y: f64,
 }
 
+#[derive(Debug)]
+struct AppState {
+  client: reqwest::Client,
+}
+
 #[tauri::command]
-async fn get_dashboard_data(app: tauri::AppHandle) -> Result<DashboardData, String> {
+async fn get_dashboard_data(
+  app: tauri::AppHandle,
+  state: tauri::State<'_, AppState>,
+) -> Result<DashboardData, String> {
   let key = load_management_key(&app)?;
-  let client = reqwest::Client::builder()
-    .user_agent("openrouter-widget/0.1.0")
-    .connect_timeout(StdDuration::from_secs(5))
-    .timeout(StdDuration::from_secs(10))
-    .build()
-    .map_err(|error| error.to_string())?;
 
   let activity_url = "https://openrouter.ai/api/v1/activity".to_string();
   eprintln!("[debug] activity_url: {activity_url}");
   eprintln!("[debug] key (first 8 chars): {}…", &key[..key.len().min(8)]);
 
-  let (credits, activity) = tokio::try_join!(
-    fetch_json::<CreditsEnvelope>(&client, "https://openrouter.ai/api/v1/credits", &key, "credits"),
-    fetch_json::<openrouter::ActivityEnvelope>(&client, &activity_url, &key, "activity"),
-  )?;
+  let (credits_result, activity_result) = tokio::join!(
+    fetch_json::<CreditsEnvelope>(&state.client, "https://openrouter.ai/api/v1/credits", &key, "credits"),
+    fetch_json::<openrouter::ActivityEnvelope>(&state.client, &activity_url, &key, "activity"),
+  );
+
+  let credits = credits_result?;
+
+  let activity = match activity_result {
+    Ok(envelope) => envelope,
+    Err(error) => {
+      eprintln!("[warn] activity fetch failed: {error}");
+      openrouter::ActivityEnvelope { data: Vec::new() }
+    }
+  };
 
   eprintln!("[debug] credits: total_credits={}, total_usage={}", credits.data.total_credits, credits.data.total_usage);
   eprintln!("[debug] raw activity items count: {}", activity.data.len());
 
-  // Filter to month-to-date: from the 1st of current month through yesterday
+  // Filter to month-to-date: from the 1st of current month through today (inclusive)
   let now = Utc::now().date_naive();
   let month_start = now.with_day(1).unwrap();
-  let yesterday = now - Duration::days(1);
   let start_str = month_start.to_string();
-  let end_str = yesterday.to_string();
+  let end_str = now.to_string();
   let raw_count = activity.data.len();
   let filtered: Vec<ActivityItem> = activity.data
     .into_iter()
@@ -174,7 +185,36 @@ fn round_money(value: f64) -> f64 {
   (value * 1000.0).round() / 1000.0
 }
 
+const MAX_RETRIES: u32 = 3;
+const RETRY_BACKOFF_SECS: u64 = 2;
+
 async fn fetch_json<T>(client: &reqwest::Client, url: &str, key: &str, label: &str) -> Result<T, String>
+where
+  T: serde::de::DeserializeOwned,
+{
+  for attempt in 1..=MAX_RETRIES {
+    match do_fetch_json::<T>(client, url, key).await {
+      Ok(value) => return Ok(value),
+      Err(error) => {
+        let is_retryable = error.starts_with("Failed to fetch")
+          || error.contains("request failed: 429")
+          || error.contains("request failed: 50");
+
+        if !is_retryable || attempt == MAX_RETRIES {
+          return Err(format!("{label}: {error}"));
+        }
+
+        eprintln!("[warn] {label} fetch attempt {attempt} failed ({error}), retrying in {RETRY_BACKOFF_SECS}s...");
+        tokio::time::sleep(std::time::Duration::from_secs(RETRY_BACKOFF_SECS)).await;
+      }
+    }
+  }
+
+  // Unreachable because MAX_RETRIES returns directly, but satisfies the compiler.
+  Err(format!("{label}: exhausted retries"))
+}
+
+async fn do_fetch_json<T>(client: &reqwest::Client, url: &str, key: &str) -> Result<T, String>
 where
   T: serde::de::DeserializeOwned,
 {
@@ -183,12 +223,12 @@ where
     .bearer_auth(key)
     .send()
     .await
-    .map_err(|error| format!("Failed to fetch {label}: {error}"))?
+    .map_err(|error| format!("Failed to fetch: {error}"))?
     .error_for_status()
-    .map_err(|error| format!("{label} request failed: {error}"))?
+    .map_err(|error| format!("request failed: {error}"))?
     .json::<T>()
     .await
-    .map_err(|error| format!("Invalid {label} response: {error}"))
+    .map_err(|error| format!("Invalid response: {error}"))
 }
 
 fn resolve_window_state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -719,6 +759,15 @@ pub fn run() {
 
       // ── Window counter for multi-window labels (starts at 1; main is widget-0 equivalent) ──
       app.manage(AtomicU32::new(1));
+
+      // ── Shared reqwest client for all API calls ──
+      let client = reqwest::Client::builder()
+        .user_agent("openrouter-widget/0.1.0")
+        .connect_timeout(StdDuration::from_secs(5))
+        .timeout(StdDuration::from_secs(10))
+        .build()
+        .map_err(|e| format!("failed to build reqwest client: {e}"))?;
+      app.manage(AppState { client });
 
       // ── System tray icon with context menu ──
       let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);

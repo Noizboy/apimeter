@@ -21,6 +21,7 @@ let resizeFrameHandle: number | undefined;
 let alwaysOnTopHandle: number | undefined;
 let isRefreshing = false;
 let appVersion = '';
+let lastUpdatedAt: Date | null = null;
 
 const WINDOW_FRAME_PADDING = 0;
 const REFRESH_INTERVAL_MS = 15_000;
@@ -206,12 +207,33 @@ function renderReady(data: DashboardData, staleMessage?: string) {
   } else {
     widget.append(balanceCard, modelsGrid);
   }
+
+  const footerParts: string[] = [];
   if (appVersion) {
-    widget.append(createElement('div', 'app-version', `v${appVersion}`));
+    footerParts.push(`v${appVersion}`);
   }
+  if (lastUpdatedAt) {
+    footerParts.push(`Updated ${formatRelativeTime(lastUpdatedAt)}`);
+  }
+  if (footerParts.length > 0) {
+    widget.append(createElement('div', 'app-version', footerParts.join(' · ')));
+  }
+
   shell.append(widget);
   app.replaceChildren(shell);
   syncWindowSize();
+}
+
+function formatRelativeTime(date: Date): string {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
 
 function renderMessageCard(className: 'status-card' | 'error-card', title: string, meta: string) {
@@ -222,8 +244,15 @@ function renderMessageCard(className: 'status-card' | 'error-card', title: strin
     createElement('div', 'meta-copy', meta),
   );
   section.append(copyWrapper);
+  const footerParts: string[] = [];
   if (appVersion) {
-    section.append(createElement('div', 'app-version', `v${appVersion}`));
+    footerParts.push(`v${appVersion}`);
+  }
+  if (lastUpdatedAt) {
+    footerParts.push(`Updated ${formatRelativeTime(lastUpdatedAt)}`);
+  }
+  if (footerParts.length > 0) {
+    section.append(createElement('div', 'app-version', footerParts.join(' · ')));
   }
   app.replaceChildren(section);
   syncWindowSize();
@@ -249,15 +278,32 @@ function render() {
   }
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error('Request timed out')), ms);
+    promise
+      .then((value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
 async function loadDashboard(isInitialLoad = false) {
   if (isRefreshing) {
+    console.warn('[debug] loadDashboard skipped — previous refresh still in progress');
     return;
   }
 
   isRefreshing = true;
 
   try {
-    const data = await getDashboardData();
+    const data = await withTimeout(getDashboardData(), 20_000);
+    lastUpdatedAt = new Date();
     state = { status: 'ready', data };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to fetch data';
