@@ -209,11 +209,22 @@ function renderReady(data: DashboardData) {
   syncWindowSize();
 }
 
+let footerElement: HTMLElement | null = null;
+
 function buildFooterElement(): HTMLElement | null {
   const parts: string[] = [];
   if (appVersion) parts.push(`v${appVersion}`);
   if (lastUpdatedAt) parts.push(`Updated ${formatRelativeTime(lastUpdatedAt)}`);
-  return parts.length > 0 ? createElement('div', 'app-version', parts.join(' · ')) : null;
+  footerElement = parts.length > 0 ? createElement('div', 'app-version', parts.join(' · ')) : null;
+  return footerElement;
+}
+
+function tickFooter(): void {
+  if (!footerElement || !lastUpdatedAt) return;
+  const parts: string[] = [];
+  if (appVersion) parts.push(`v${appVersion}`);
+  parts.push(`Updated ${formatRelativeTime(lastUpdatedAt)}`);
+  footerElement.textContent = parts.join(' · ');
 }
 
 function formatRelativeTime(date: Date): string {
@@ -339,6 +350,11 @@ async function bootstrap() {
       render();
     }
   }, 15_000);
+
+  // ── 1c. Footer ticker: update "Updated Xs ago" every 5s ──────
+  // Without this the relative time text would freeze until the next
+  // dashboard-updated event arrives (every 20s).
+  setInterval(tickFooter, 5_000);
 
   // ── 2. Event listener for live updates from background task ────
   // The Rust background task fetches data every 10s and emits
