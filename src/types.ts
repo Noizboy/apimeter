@@ -14,5 +14,4 @@ export type DashboardState = {
   status: 'loading' | 'error' | 'ready';
   data?: DashboardData;
   message?: string;
-  staleMessage?: string;
 };

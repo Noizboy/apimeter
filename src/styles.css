@@ -179,18 +179,6 @@ input {
   color: #ffffff;
 }
 
-.sync-status {
-  display: none;
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: #f3f3ed;
-}
-
-.sync-status.is-visible {
-  display: block;
-}
-
 .status-card,
 .error-card {
   width: 384px;

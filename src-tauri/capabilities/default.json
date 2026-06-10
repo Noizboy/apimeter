@@ -5,7 +5,7 @@
   "windows": ["*"],
   "permissions": [
     "core:default",
-    "core:window:default",
+    "core:event:default",
     "core:window:allow-start-dragging",
     "core:window:allow-outer-position",
     "core:window:allow-set-size",

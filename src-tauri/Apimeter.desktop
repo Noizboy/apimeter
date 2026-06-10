@@ -1,6 +1,6 @@
 [Desktop Entry]
 Categories=Utility;
-Exec=apimeter-launcher.sh
+Exec=openrouter-widget
 Icon=apimeter
 Name=Apimeter
 GenericName=API Usage Widget

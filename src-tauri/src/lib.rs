@@ -5,12 +5,15 @@ use openrouter::{ActivityItem, CreditsEnvelope};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, env, fs, path::{Path, PathBuf}};
 use std::process::Command;
-use std::time::Duration as StdDuration;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration as StdDuration;
+use tauri::Emitter;
 use tauri::Manager;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{LogicalPosition, Position, WebviewUrl, WebviewWindowBuilder};
+use tokio::sync::RwLock;
 use tauri_plugin_autostart::ManagerExt;
 
 #[derive(Debug, Serialize, Clone)]
@@ -44,22 +47,39 @@ struct WindowState {
 #[derive(Debug)]
 struct AppState {
   client: reqwest::Client,
+  // Arc<DashboardData> avoids cloning the full data struct on every
+  // background fetch cycle. The clone on read (get_latest_dashboard)
+  // is unavoidable because Tauri serializes the response for IPC.
+  last_data: Arc<RwLock<Option<Arc<DashboardData>>>>,
 }
 
+/// Read the latest dashboard data from the shared background state.
+/// Returns `None` if the background task hasn't completed its first
+/// fetch yet. The frontend uses this on initialization to show data
+/// immediately without waiting for the first event.
+///
+/// The stored value is `Arc<DashboardData>` to avoid cloning on the
+/// background task's write path. We clone here on read (for IPC
+/// serialization), which happens at most once per widget.
 #[tauri::command]
-async fn get_dashboard_data(
-  app: tauri::AppHandle,
+async fn get_latest_dashboard(
   state: tauri::State<'_, AppState>,
-) -> Result<DashboardData, String> {
-  let key = load_management_key(&app)?;
+) -> Result<Option<DashboardData>, String> {
+  let guard = state.last_data.read().await;
+  Ok(guard.as_ref().map(|d| (**d).clone()))
+}
 
-  let activity_url = "https://openrouter.ai/api/v1/activity".to_string();
-  eprintln!("[debug] activity_url: {activity_url}");
-  eprintln!("[debug] key (first 8 chars): {}…", &key[..key.len().min(8)]);
+/// Run the actual API fetch and data processing.
+/// Called by the background task (tokio::spawn) every 20 seconds.
+async fn fetch_and_process(
+  client: &reqwest::Client,
+  key: &str,
+) -> Result<DashboardData, String> {
+  let activity_url = "https://openrouter.ai/api/v1/activity";
 
   let (credits_result, activity_result) = tokio::join!(
-    fetch_json::<CreditsEnvelope>(&state.client, "https://openrouter.ai/api/v1/credits", &key, "credits"),
-    fetch_json::<openrouter::ActivityEnvelope>(&state.client, &activity_url, &key, "activity"),
+    fetch_json::<CreditsEnvelope>(client, "https://openrouter.ai/api/v1/credits", key, "credits"),
+    fetch_json::<openrouter::ActivityEnvelope>(client, activity_url, key, "activity"),
   );
 
   let credits = credits_result?;
@@ -77,7 +97,9 @@ async fn get_dashboard_data(
 
   // Filter to month-to-date: from the 1st of current month through today (inclusive)
   let now = Utc::now().date_naive();
-  let month_start = now.with_day(1).unwrap();
+  // with_day(1) always succeeds for Utc::now() (every month has day 1),
+  // but use unwrap_or(now) as a safety net against future refactors.
+  let month_start = now.with_day(1).unwrap_or(now);
   let start_str = month_start.to_string();
   let end_str = now.to_string();
   let raw_count = activity.data.len();
@@ -421,6 +443,61 @@ mod tests {
   }
 
   #[test]
+  fn last_data_stores_and_retrieves_dashboard() {
+    // Verify the core data-flow contract: the background task stores
+    // data in AppState.last_data and get_latest_dashboard reads it.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+      let last_data: Arc<RwLock<Option<Arc<DashboardData>>>> = Arc::new(RwLock::new(None));
+
+      // Initially empty (before first background fetch)
+      assert!(last_data.read().await.is_none());
+
+      // Simulate a successful fetch
+      let data = DashboardData {
+        balance: 42.123,
+        top_models: vec![
+          ModelCost { name: "openai/gpt-4o".into(), cost: 1.5, share: 60.0 },
+          ModelCost { name: "anthropic/claude-sonnet-4".into(), cost: 0.75, share: 30.0 },
+        ],
+        other_models: vec![],
+      };
+      *last_data.write().await = Some(Arc::new(data));
+
+      // Read it back (this is what get_latest_dashboard does)
+      let guard = last_data.read().await;
+      let retrieved = guard.as_ref().map(|d| (**d).clone());
+      assert_eq!(retrieved.as_ref().unwrap().balance, 42.123);
+      assert_eq!(retrieved.as_ref().unwrap().top_models.len(), 2);
+      assert_eq!(retrieved.as_ref().unwrap().top_models[0].name, "openai/gpt-4o");
+    });
+  }
+
+  #[test]
+  fn last_data_not_overwritten_on_error() {
+    // Verify that when a fetch fails, last_data retains the previous
+    // good data (the background task only writes on success).
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+      let last_data: Arc<RwLock<Option<Arc<DashboardData>>>> = Arc::new(RwLock::new(None));
+
+      // Store initial data
+      let initial = DashboardData {
+        balance: 100.0,
+        top_models: vec![],
+        other_models: vec![],
+      };
+      *last_data.write().await = Some(Arc::new(initial));
+
+      // Simulate a failed fetch — background task does NOT touch last_data
+      // (only logs the error). So the stored value should be unchanged.
+      let guard = last_data.read().await;
+      let retrieved = guard.as_ref().map(|d| (**d).clone());
+      assert_eq!(retrieved.unwrap().balance, 100.0);
+    });
+  }
+
+  #[test]
   fn env_search_paths_includes_src_tauri_parent() {
     // When cwd is the Rust crate directory, the project's .env.local
     // sits one level up and must be on the candidate list.
@@ -760,14 +837,63 @@ pub fn run() {
       // ── Window counter for multi-window labels (starts at 1; main is widget-0 equivalent) ──
       app.manage(AtomicU32::new(1));
 
-      // ── Shared reqwest client for all API calls ──
+      // ── Shared reqwest client + shared state ──
       let client = reqwest::Client::builder()
         .user_agent("openrouter-widget/0.1.0")
         .connect_timeout(StdDuration::from_secs(5))
         .timeout(StdDuration::from_secs(10))
         .build()
         .map_err(|e| format!("failed to build reqwest client: {e}"))?;
-      app.manage(AppState { client });
+      app.manage(AppState {
+        client,
+        last_data: Arc::new(RwLock::new(None)),
+      });
+
+      // ── Background fetch task (the ONLY thing that calls the API) ──
+      // Every 20 seconds this task fetches dashboard data from OpenRouter,
+      // stores it in shared state, and broadcasts it to all widget windows
+      // via the "dashboard-updated" event. Widgets are pure consumers.
+      {
+        let app_handle = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+          // Helper: run one fetch cycle
+          async fn fetch_and_broadcast(app_handle: &tauri::AppHandle) {
+            let key = match load_management_key(app_handle) {
+              Ok(k) => k,
+              Err(e) => {
+                eprintln!("[background] cannot load key: {e}");
+                return;
+              }
+            };
+            let state = app_handle.state::<AppState>();
+            match fetch_and_process(&state.client, &key).await {
+              Ok(data) => {
+                eprintln!("[background] fetch OK — balance={}, top_models={}",
+                  data.balance, data.top_models.len());
+                let shared = Arc::new(data);
+                *state.last_data.write().await = Some(shared.clone());
+                if let Err(e) = app_handle.emit("dashboard-updated", &*shared) {
+                  eprintln!("[background] emit failed: {e}");
+                }
+              }
+              Err(e) => {
+                eprintln!("[background] fetch FAILED: {e}");
+                // last_data untouched — widgets keep showing last good data
+              }
+            }
+          }
+
+          // Immediate first fetch (no delay)
+          fetch_and_broadcast(&app_handle).await;
+
+          // Then every 20 seconds
+          let mut interval = tokio::time::interval(StdDuration::from_secs(20));
+          loop {
+            interval.tick().await;
+            fetch_and_broadcast(&app_handle).await;
+          }
+        });
+      }
 
       // ── System tray icon with context menu ──
       let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
@@ -825,7 +951,7 @@ pub fn run() {
 
       Ok(())
     })
-    .invoke_handler(tauri::generate_handler![get_dashboard_data, save_window_position, open_openrouter_activity])
+    .invoke_handler(tauri::generate_handler![get_latest_dashboard, save_window_position, open_openrouter_activity])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }

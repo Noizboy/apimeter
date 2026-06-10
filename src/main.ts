@@ -2,7 +2,8 @@ import './styles.css';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
-import { getDashboardData, saveWindowPosition } from './api';
+import { listen } from '@tauri-apps/api/event';
+import { saveWindowPosition } from './api';
 import type { DashboardData, DashboardState, ModelCost } from './types';
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
@@ -14,21 +15,15 @@ if (!appRoot) {
 const app = appRoot;
 
 let state: DashboardState = { status: 'loading' };
-let refreshHandle: number | undefined;
 let unlistenMove: (() => void) | undefined;
+let unlistenDashboard: (() => void) | undefined;
 let savePositionHandle: number | undefined;
 let resizeFrameHandle: number | undefined;
 let alwaysOnTopHandle: number | undefined;
-let isRefreshing = false;
-/** Tracks when isRefreshing was set to `true`. Used by the safety latch
- *  in loadDashboard to detect a stuck refresh guard and force-reset it. */
-let refreshingSince: number | null = null;
-let consecutiveFailures = 0;
 let appVersion = '';
 let lastUpdatedAt: Date | null = null;
 
 const WINDOW_FRAME_PADDING = 0;
-const REFRESH_INTERVAL_MS = 10_000;
 // Watchdog interval for re-asserting always-on-top. Some compositors
 // (notably Mutter/Wayland) drop the above-stack hint after focus
 // changes, workspace switches, drag, or when a spawned window (e.g. the
@@ -37,12 +32,6 @@ const REFRESH_INTERVAL_MS = 10_000;
 // no-op when the window is already on top, so this is safe to run
 // continuously.
 const ALWAYS_ON_TOP_WATCHDOG_MS = 1_000;
-// Maximum delay between refresh attempts after consecutive failures.
-// Gives the API / network time to recover without hammering the endpoint.
-const MAX_BACKOFF_MS = 120_000;
-// If lastUpdatedAt is older than this threshold a forced refresh is
-// triggered regardless of the isRefreshing guard state.
-const STALE_THRESHOLD_MS = 60_000;
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('en-US', {
@@ -175,12 +164,11 @@ function setupWindowInteractions() {
   });
 }
 
-function renderReady(data: DashboardData, staleMessage?: string) {
+function renderReady(data: DashboardData) {
   console.log('[debug] renderReady — DashboardData:', {
     balance: data.balance,
     topModels: data.topModels.map(m => ({ name: m.name, cost: m.cost, share: m.share })),
     otherModelsCount: data.otherModels.length,
-    staleMessage,
   });
 
   const shell = createElement('div', 'widget-shell');
@@ -211,27 +199,21 @@ function renderReady(data: DashboardData, staleMessage?: string) {
     );
   }
 
-  if (staleMessage) {
-    const statusLine = createElement('div', 'sync-status is-visible', staleMessage);
-    widget.append(balanceCard, modelsGrid, statusLine);
-  } else {
-    widget.append(balanceCard, modelsGrid);
-  }
+  widget.append(balanceCard, modelsGrid);
 
-  const footerParts: string[] = [];
-  if (appVersion) {
-    footerParts.push(`v${appVersion}`);
-  }
-  if (lastUpdatedAt) {
-    footerParts.push(`Updated ${formatRelativeTime(lastUpdatedAt)}`);
-  }
-  if (footerParts.length > 0) {
-    widget.append(createElement('div', 'app-version', footerParts.join(' · ')));
-  }
+  const footer = buildFooterElement();
+  if (footer) widget.append(footer);
 
   shell.append(widget);
   app.replaceChildren(shell);
   syncWindowSize();
+}
+
+function buildFooterElement(): HTMLElement | null {
+  const parts: string[] = [];
+  if (appVersion) parts.push(`v${appVersion}`);
+  if (lastUpdatedAt) parts.push(`Updated ${formatRelativeTime(lastUpdatedAt)}`);
+  return parts.length > 0 ? createElement('div', 'app-version', parts.join(' · ')) : null;
 }
 
 function formatRelativeTime(date: Date): string {
@@ -254,16 +236,8 @@ function renderMessageCard(className: 'status-card' | 'error-card', title: strin
     createElement('div', 'meta-copy', meta),
   );
   section.append(copyWrapper);
-  const footerParts: string[] = [];
-  if (appVersion) {
-    footerParts.push(`v${appVersion}`);
-  }
-  if (lastUpdatedAt) {
-    footerParts.push(`Updated ${formatRelativeTime(lastUpdatedAt)}`);
-  }
-  if (footerParts.length > 0) {
-    section.append(createElement('div', 'app-version', footerParts.join(' · ')));
-  }
+  const footer = buildFooterElement();
+  if (footer) section.append(footer);
   app.replaceChildren(section);
   syncWindowSize();
 }
@@ -284,71 +258,7 @@ function render() {
   }
 
   if (state.data) {
-    renderReady(state.data, state.staleMessage);
-  }
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error('Request timed out')), ms);
-    promise
-      .then((value) => {
-        window.clearTimeout(timer);
-        resolve(value);
-      })
-      .catch((error) => {
-        window.clearTimeout(timer);
-        reject(error);
-      });
-  });
-}
-
-async function loadDashboard(isInitialLoad = false) {
-  if (isRefreshing) {
-    // ── Safety latch ────────────────────────────────────────────────
-    // If the IPC invoke or its JS timeout never settles, isRefreshing
-    // stays `true` forever and all subsequent interval ticks are
-    // skipped. Detect that case and force-reset so polling resumes.
-    if (refreshingSince !== null && Date.now() - refreshingSince > 30_000) {
-      console.warn('[debug] isRefreshing was stuck for >30s — force-resetting guard');
-      isRefreshing = false;
-      refreshingSince = null;
-    } else {
-      console.warn('[debug] loadDashboard skipped — previous refresh still in progress');
-      return;
-    }
-  }
-
-  isRefreshing = true;
-  refreshingSince = Date.now();
-
-  try {
-    const data = await withTimeout(getDashboardData(), 20_000);
-    lastUpdatedAt = new Date();
-    state = { status: 'ready', data };
-    consecutiveFailures = 0;              // reset counter on success
-  } catch (error) {
-    consecutiveFailures += 1;             // track for backoff
-    const message = error instanceof Error ? error.message : 'Unable to fetch data';
-    if (!isInitialLoad && state.data) {
-      state = {
-        status: 'ready',
-        data: state.data,
-        staleMessage: 'Refresh failed — showing last data',
-      };
-    } else {
-      state = { status: 'error', message };
-    }
-  } finally {
-    isRefreshing = false;
-    refreshingSince = null;
-    // Defensive: render() should never throw, but if it does we must
-    // not let it become an unhandled promise rejection (void callers).
-    try {
-      render();
-    } catch (renderError) {
-      console.error('[loadDashboard] render() threw unexpectedly:', renderError);
-    }
+    renderReady(state.data);
   }
 }
 
@@ -400,95 +310,70 @@ async function bootstrap() {
     scheduleWindowPositionSave();
   });
 
-  await loadDashboard(true);
-
-  // ── Recursive refresh scheduler with backoff ────────────────────
-  // Unlike setInterval, this ensures the next refresh only starts
-  // after the previous one finishes + the calculated delay.  When
-  // consecutive failures occur the delay grows exponentially up to
-  // MAX_BACKOFF_MS so we don't hammer a potentially-down API.
-  function cancelNextRefresh() {
-    if (refreshHandle !== undefined) {
-      window.clearTimeout(refreshHandle);
-      refreshHandle = undefined;
+  // ── 1. Init: grab data from shared state immediately ───────────
+  // The background task may have already fetched data. If so, show it
+  // instantly instead of waiting for the first event.
+  try {
+    const initialData = await invoke<DashboardData | null>('get_latest_dashboard');
+    if (initialData) {
+      lastUpdatedAt = new Date();
+      state = { status: 'ready', data: initialData };
+      render();
+      console.log('[init] loaded from shared state');
     }
+  } catch (error) {
+    console.warn('[init] get_latest_dashboard failed:', error);
   }
 
-  function getNextDelay(): number {
-    if (consecutiveFailures === 0) return REFRESH_INTERVAL_MS;
-    // Exponential backoff: 15s → 30s → 60s → 120s (capped)
-    const backoff = Math.min(
-      REFRESH_INTERVAL_MS * (2 ** consecutiveFailures),
-      MAX_BACKOFF_MS,
-    );
-    return backoff;
-  }
-
-  function scheduleNextRefresh() {
-    const delay = getNextDelay();
-    if (consecutiveFailures > 0) {
-      console.log(`[debug] next refresh in ${delay}ms (${consecutiveFailures} consecutive failures)`);
+  // ── 1b. Safety timeout: if still loading after 15s, show error ─
+  // Covers the case where the background task never starts, the API
+  // key is missing, or there's no network. Without this the widget
+  // would show "Loading" forever.
+  setTimeout(() => {
+    if (state.status === 'loading') {
+      console.warn('[init] timeout — no data received after 15s');
+      state = {
+        status: 'error',
+        message: 'Unable to fetch data — check your API key and network connection.',
+      };
+      render();
     }
-    refreshHandle = window.setTimeout(() => {
-      loadDashboard().catch((error) => {
-        console.error('[poll] loadDashboard failed:', error);
-      }).finally(() => {
-        scheduleNextRefresh();
-      });
-    }, delay);
-  }
+  }, 15_000);
 
-  scheduleNextRefresh();
+  // ── 2. Event listener for live updates from background task ────
+  // The Rust background task fetches data every 10s and emits
+  // "dashboard-updated" to ALL widget windows. This is the primary
+  // update channel — no polling needed.
+  unlistenDashboard = await listen<DashboardData>('dashboard-updated', (event) => {
+    const data = event.payload;
+    console.log('[event] dashboard-updated received — balance:', data.balance);
 
-  // ── Staleness watchdog ──────────────────────────────────────────
-  // Runs on the always-on-top interval (1 s).  If the last successful
-  // refresh is older than STALE_THRESHOLD_MS and no refresh is in
-  // progress, kick one off immediately.  This covers long idle periods
-  // (system sleep, network outage, etc.) where the backoff may have
-  // pushed the next tick far into the future.
-  function checkStaleness() {
-    if (!lastUpdatedAt) return;
-    if (isRefreshing) return;            // already fetching, don't stack
-    const age = Date.now() - lastUpdatedAt.getTime();
-    if (age > STALE_THRESHOLD_MS) {
-      console.warn(`[staleness] data is ${Math.round(age / 1000)}s old — forcing refresh`);
-      cancelNextRefresh();
-      loadDashboard().catch((error) => {
-        console.error('[staleness] loadDashboard failed:', error);
-      }).finally(() => {
-        scheduleNextRefresh();
-      });
+    lastUpdatedAt = new Date();
+    state = { status: 'ready', data };
+
+    try {
+      render();
+    } catch (error) {
+      console.error('[event] render() threw unexpectedly:', error);
     }
-  }
+  });
 
-  // ── Focus / visibility triggers ─────────────────────────────────
+  // ── 3. Focus / visibility: only re-assert always-on-top ────────
+  // No fetch needed — the background task handles that continuously.
   window.addEventListener('focus', () => {
-    cancelNextRefresh();
-    loadDashboard().catch((error) => {
-      console.error('[focus] loadDashboard failed:', error);
-    }).finally(() => {
-      scheduleNextRefresh();
-    });
     ensureAlwaysOnTop();
   });
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      cancelNextRefresh();
-      loadDashboard().catch((error) => {
-        console.error('[visibility] loadDashboard failed:', error);
-      }).finally(() => {
-        scheduleNextRefresh();
-      });
       ensureAlwaysOnTop();
     }
   });
 
-  // Staleness check piggybacks on the always-on-top watchdog interval.
-  const origAlwaysOnTop = ensureAlwaysOnTop;
+  // Always-on-top watchdog (1s interval). No staleness check needed
+  // because the background task guarantees fresh data every 10s.
   alwaysOnTopHandle = window.setInterval(() => {
-    checkStaleness();
-    origAlwaysOnTop();
+    ensureAlwaysOnTop();
   }, ALWAYS_ON_TOP_WATCHDOG_MS);
 
 }
@@ -512,9 +397,10 @@ async function openOpenRouterActivity() {
 }
 
 window.addEventListener('beforeunload', () => {
-  if (refreshHandle !== undefined) {
-    window.clearTimeout(refreshHandle);
-    refreshHandle = undefined;
+  // Cleanup event listener first so no stale events arrive mid-teardown
+  if (unlistenDashboard) {
+    unlistenDashboard();
+    unlistenDashboard = undefined;
   }
 
   if (alwaysOnTopHandle) {
