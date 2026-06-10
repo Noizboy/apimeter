@@ -20,11 +20,15 @@ let savePositionHandle: number | undefined;
 let resizeFrameHandle: number | undefined;
 let alwaysOnTopHandle: number | undefined;
 let isRefreshing = false;
+/** Tracks when isRefreshing was set to `true`. Used by the safety latch
+ *  in loadDashboard to detect a stuck refresh guard and force-reset it. */
+let refreshingSince: number | null = null;
+let consecutiveFailures = 0;
 let appVersion = '';
 let lastUpdatedAt: Date | null = null;
 
 const WINDOW_FRAME_PADDING = 0;
-const REFRESH_INTERVAL_MS = 15_000;
+const REFRESH_INTERVAL_MS = 10_000;
 // Watchdog interval for re-asserting always-on-top. Some compositors
 // (notably Mutter/Wayland) drop the above-stack hint after focus
 // changes, workspace switches, drag, or when a spawned window (e.g. the
@@ -33,6 +37,12 @@ const REFRESH_INTERVAL_MS = 15_000;
 // no-op when the window is already on top, so this is safe to run
 // continuously.
 const ALWAYS_ON_TOP_WATCHDOG_MS = 1_000;
+// Maximum delay between refresh attempts after consecutive failures.
+// Gives the API / network time to recover without hammering the endpoint.
+const MAX_BACKOFF_MS = 120_000;
+// If lastUpdatedAt is older than this threshold a forced refresh is
+// triggered regardless of the isRefreshing guard state.
+const STALE_THRESHOLD_MS = 60_000;
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('en-US', {
@@ -295,17 +305,30 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 async function loadDashboard(isInitialLoad = false) {
   if (isRefreshing) {
-    console.warn('[debug] loadDashboard skipped — previous refresh still in progress');
-    return;
+    // ── Safety latch ────────────────────────────────────────────────
+    // If the IPC invoke or its JS timeout never settles, isRefreshing
+    // stays `true` forever and all subsequent interval ticks are
+    // skipped. Detect that case and force-reset so polling resumes.
+    if (refreshingSince !== null && Date.now() - refreshingSince > 30_000) {
+      console.warn('[debug] isRefreshing was stuck for >30s — force-resetting guard');
+      isRefreshing = false;
+      refreshingSince = null;
+    } else {
+      console.warn('[debug] loadDashboard skipped — previous refresh still in progress');
+      return;
+    }
   }
 
   isRefreshing = true;
+  refreshingSince = Date.now();
 
   try {
     const data = await withTimeout(getDashboardData(), 20_000);
     lastUpdatedAt = new Date();
     state = { status: 'ready', data };
+    consecutiveFailures = 0;              // reset counter on success
   } catch (error) {
+    consecutiveFailures += 1;             // track for backoff
     const message = error instanceof Error ? error.message : 'Unable to fetch data';
     if (!isInitialLoad && state.data) {
       state = {
@@ -318,9 +341,15 @@ async function loadDashboard(isInitialLoad = false) {
     }
   } finally {
     isRefreshing = false;
+    refreshingSince = null;
+    // Defensive: render() should never throw, but if it does we must
+    // not let it become an unhandled promise rejection (void callers).
+    try {
+      render();
+    } catch (renderError) {
+      console.error('[loadDashboard] render() threw unexpectedly:', renderError);
+    }
   }
-
-  render();
 }
 
 function scheduleWindowPositionSave() {
@@ -373,30 +402,95 @@ async function bootstrap() {
 
   await loadDashboard(true);
 
-  refreshHandle = window.setInterval(() => {
-    void loadDashboard();
-  }, REFRESH_INTERVAL_MS);
+  // ── Recursive refresh scheduler with backoff ────────────────────
+  // Unlike setInterval, this ensures the next refresh only starts
+  // after the previous one finishes + the calculated delay.  When
+  // consecutive failures occur the delay grows exponentially up to
+  // MAX_BACKOFF_MS so we don't hammer a potentially-down API.
+  function cancelNextRefresh() {
+    if (refreshHandle !== undefined) {
+      window.clearTimeout(refreshHandle);
+      refreshHandle = undefined;
+    }
+  }
 
+  function getNextDelay(): number {
+    if (consecutiveFailures === 0) return REFRESH_INTERVAL_MS;
+    // Exponential backoff: 15s → 30s → 60s → 120s (capped)
+    const backoff = Math.min(
+      REFRESH_INTERVAL_MS * (2 ** consecutiveFailures),
+      MAX_BACKOFF_MS,
+    );
+    return backoff;
+  }
+
+  function scheduleNextRefresh() {
+    const delay = getNextDelay();
+    if (consecutiveFailures > 0) {
+      console.log(`[debug] next refresh in ${delay}ms (${consecutiveFailures} consecutive failures)`);
+    }
+    refreshHandle = window.setTimeout(() => {
+      loadDashboard().catch((error) => {
+        console.error('[poll] loadDashboard failed:', error);
+      }).finally(() => {
+        scheduleNextRefresh();
+      });
+    }, delay);
+  }
+
+  scheduleNextRefresh();
+
+  // ── Staleness watchdog ──────────────────────────────────────────
+  // Runs on the always-on-top interval (1 s).  If the last successful
+  // refresh is older than STALE_THRESHOLD_MS and no refresh is in
+  // progress, kick one off immediately.  This covers long idle periods
+  // (system sleep, network outage, etc.) where the backoff may have
+  // pushed the next tick far into the future.
+  function checkStaleness() {
+    if (!lastUpdatedAt) return;
+    if (isRefreshing) return;            // already fetching, don't stack
+    const age = Date.now() - lastUpdatedAt.getTime();
+    if (age > STALE_THRESHOLD_MS) {
+      console.warn(`[staleness] data is ${Math.round(age / 1000)}s old — forcing refresh`);
+      cancelNextRefresh();
+      loadDashboard().catch((error) => {
+        console.error('[staleness] loadDashboard failed:', error);
+      }).finally(() => {
+        scheduleNextRefresh();
+      });
+    }
+  }
+
+  // ── Focus / visibility triggers ─────────────────────────────────
   window.addEventListener('focus', () => {
-    void loadDashboard();
+    cancelNextRefresh();
+    loadDashboard().catch((error) => {
+      console.error('[focus] loadDashboard failed:', error);
+    }).finally(() => {
+      scheduleNextRefresh();
+    });
     ensureAlwaysOnTop();
   });
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      void loadDashboard();
+      cancelNextRefresh();
+      loadDashboard().catch((error) => {
+        console.error('[visibility] loadDashboard failed:', error);
+      }).finally(() => {
+        scheduleNextRefresh();
+      });
       ensureAlwaysOnTop();
     }
   });
 
-  // Watchdog: re-assert always-on-top on a short interval. The focus
-  // and visibility hooks above only fire on discrete transitions and
-  // miss compositor-driven re-stacks (xdg-open, drag end, workspace
-  // switch on Mutter/Wayland). A continuous tick closes that gap.
-  alwaysOnTopHandle = window.setInterval(
-    ensureAlwaysOnTop,
-    ALWAYS_ON_TOP_WATCHDOG_MS,
-  );
+  // Staleness check piggybacks on the always-on-top watchdog interval.
+  const origAlwaysOnTop = ensureAlwaysOnTop;
+  alwaysOnTopHandle = window.setInterval(() => {
+    checkStaleness();
+    origAlwaysOnTop();
+  }, ALWAYS_ON_TOP_WATCHDOG_MS);
+
 }
 
 function ensureAlwaysOnTop() {
@@ -418,16 +512,29 @@ async function openOpenRouterActivity() {
 }
 
 window.addEventListener('beforeunload', () => {
-  if (refreshHandle) {
-    window.clearInterval(refreshHandle);
+  if (refreshHandle !== undefined) {
+    window.clearTimeout(refreshHandle);
+    refreshHandle = undefined;
   }
 
   if (alwaysOnTopHandle) {
     window.clearInterval(alwaysOnTopHandle);
+    alwaysOnTopHandle = undefined;
+  }
+
+  if (resizeFrameHandle) {
+    window.cancelAnimationFrame(resizeFrameHandle);
+    resizeFrameHandle = undefined;
+  }
+
+  if (savePositionHandle) {
+    window.clearTimeout(savePositionHandle);
+    savePositionHandle = undefined;
   }
 
   if (unlistenMove) {
     unlistenMove();
+    unlistenMove = undefined;
   }
 
   // Best-effort flush of the window position. The widget has no in-app

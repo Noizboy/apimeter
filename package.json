@@ -1,7 +1,7 @@
 {
   "name": "apimeter",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,8 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:build": "tauri build",
-    "finalize:deb": "bash scripts/finalize-linux-bundle.sh \"src-tauri/target/release/bundle/deb/Apimeter_0.1.2_amd64.deb\" \"src-tauri/target/release/bundle/deb/Apimeter_0.1.2_amd64-xwayland.deb\"",
-    "finalize:appimage": "bash scripts/finalize-appimage.sh \"src-tauri/target/release/bundle/appimage/Apimeter_0.1.2_amd64.AppImage\" \"src-tauri/target/release/bundle/appimage/Apimeter_0.1.2_amd64-xwayland.AppImage\"",
+    "finalize:deb": "bash scripts/finalize-linux-bundle.sh \"src-tauri/target/release/bundle/deb/Apimeter_0.1.3_amd64.deb\" \"src-tauri/target/release/bundle/deb/Apimeter_0.1.3_amd64-xwayland.deb\"",
+    "finalize:appimage": "bash scripts/finalize-appimage.sh \"src-tauri/target/release/bundle/appimage/Apimeter_0.1.3_amd64.AppImage\" \"src-tauri/target/release/bundle/appimage/Apimeter_0.1.3_amd64-xwayland.AppImage\"",
     "build:linux": "npm run tauri:build && npm run finalize:deb && npm run finalize:appimage"
   },
   "dependencies": {
